@@ -1,0 +1,100 @@
+name: IFAS VMS V3 Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Extract V3 ZIP
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path . -Filter "IFAS-VMS-COMPLETE-PRODUCT-V3.zip" -Recurse |
+            Select-Object -First 1
+
+          if (-not $zip) {
+            Write-Error "V3 ZIP not found."
+            exit 1
+          }
+
+          New-Item -ItemType Directory -Force -Path source | Out-Null
+
+          Expand-Archive `
+            -Path $zip.FullName `
+            -DestinationPath source `
+            -Force
+
+          Write-Host "V3 ZIP extracted successfully."
+
+      - name: Find Solution
+        shell: pwsh
+        run: |
+          $sln = Get-ChildItem `
+            -Path source `
+            -Filter "*.sln" `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $sln) {
+            Write-Error "No Visual Studio solution (.sln) found in V3 ZIP."
+            exit 1
+          }
+
+          Write-Host "Solution found:"
+          Write-Host $sln.FullName
+
+          "SOLUTION=$($sln.FullName)" >> $env:GITHUB_ENV
+
+      - name: Restore
+        run: dotnet restore "$env:SOLUTION"
+
+      - name: Build Solution
+        run: dotnet build "$env:SOLUTION" -c Release --no-restore
+
+      - name: Publish Projects
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path publish | Out-Null
+
+          $projects = Get-ChildItem `
+            -Path source `
+            -Filter "*.csproj" `
+            -Recurse
+
+          foreach ($project in $projects) {
+            Write-Host "Publishing: $($project.FullName)"
+
+            $name = $project.BaseName
+
+            dotnet publish $project.FullName `
+              -c Release `
+              -r win-x64 `
+              --self-contained true `
+              -p:PublishSingleFile=true `
+              -p:IncludeNativeLibrariesForSelfExtract=true `
+              -o "publish/$name"
+          }
+
+      - name: Create Complete Build ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path publish/* `
+            -DestinationPath IFAS-VMS-V3-WIN-X64.zip `
+            -Force
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IFAS-VMS-V3-WIN-X64
+          path: IFAS-VMS-V3-WIN-X64.zip
